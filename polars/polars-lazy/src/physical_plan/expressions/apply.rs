@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
+use polars_arrow::error;
 use polars_arrow::utils::CustomIterTools;
 use polars_core::frame::groupby::GroupsProxy;
 use polars_core::prelude::*;
@@ -169,20 +170,21 @@ impl PhysicalExpr for ApplyExpr {
                         return Ok(self.finish_apply_groups(ac, ca));
                     }
 
-                    let mut ca: ListChunked = agg
+                    let mut ca = agg
                         .list()
                         .unwrap()
                         .par_iter()
                         .map(|opt_s| {
-                            opt_s.and_then(|mut s| {
+                            opt_s.map_or(Ok(None), |mut s| {
                                 if self.pass_name_to_apply {
                                     s.rename(&name);
                                 }
                                 let mut container = [s];
-                                self.function.call_udf(&mut container).ok()
+                                let s = self.function.call_udf(&mut container)?;
+                                Ok(Some(s))
                             })
                         })
-                        .collect();
+                        .collect::<PolarsResult<ListChunked>>()?;
 
                     ca.rename(&name);
                     Ok(self.finish_apply_groups(ac, ca))
@@ -280,13 +282,13 @@ impl PhysicalExpr for ApplyExpr {
                                 container.clear();
                                 for iter in &mut iters {
                                     match iter.next().unwrap() {
-                                        None => return None,
+                                        None => return Ok(None),
                                         Some(s) => container.push(s.deep_clone()),
                                     }
                                 }
-                                self.function.call_udf(&mut container).ok()
+                                self.function.call_udf(&mut container).map(Some)
                             })
-                            .collect_trusted();
+                            .collect::<PolarsResult<ListChunked>>()?;
 
                         ca.rename(&field.name);
                         drop(iters);
